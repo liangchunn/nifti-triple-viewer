@@ -491,8 +491,10 @@ impl eframe::App for NiftiViewer {
                     let mm_min_z = mm_a.min(mm_b);
                     let mm_max_z = mm_a.max(mm_b);
                     let mut mm_z = self.voxel_to_mm(2, self.slice_z);
+                    let slider_rect = slider_strip.shrink(pad);
+                    ui.spacing_mut().slider_width = slider_rect.width() * 0.7;
                     let resp = ui.put(
-                        slider_strip.shrink(pad),
+                        slider_rect,
                         egui::Slider::new(&mut mm_z, mm_min_z..=mm_max_z)
                             .suffix(" mm")
                             .step_by(self.voxdim[2] as f64),
@@ -558,8 +560,10 @@ impl eframe::App for NiftiViewer {
                     let mm_min_y = mm_a.min(mm_b);
                     let mm_max_y = mm_a.max(mm_b);
                     let mut mm_y = self.voxel_to_mm(1, self.slice_y);
+                    let slider_rect = slider_strip.shrink(pad);
+                    ui.spacing_mut().slider_width = slider_rect.width() * 0.7;
                     let resp = ui.put(
-                        slider_strip.shrink(pad),
+                        slider_rect,
                         egui::Slider::new(&mut mm_y, mm_min_y..=mm_max_y)
                             .suffix(" mm")
                             .step_by(self.voxdim[1] as f64),
@@ -619,8 +623,10 @@ impl eframe::App for NiftiViewer {
                     let mm_min_x = mm_a.min(mm_b);
                     let mm_max_x = mm_a.max(mm_b);
                     let mut mm_x = self.voxel_to_mm(0, self.slice_x);
+                    let slider_rect = slider_strip.shrink(pad);
+                    ui.spacing_mut().slider_width = slider_rect.width() * 0.7;
                     let resp = ui.put(
-                        slider_strip.shrink(pad),
+                        slider_rect,
                         egui::Slider::new(&mut mm_x, mm_min_x..=mm_max_x)
                             .suffix(" mm")
                             .step_by(self.voxdim[0] as f64),
