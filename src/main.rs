@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use anyhow::Result;
 use eframe::egui;
 use ndarray::{s, Array3};
