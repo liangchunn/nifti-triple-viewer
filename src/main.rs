@@ -442,8 +442,9 @@ impl eframe::App for NiftiViewer {
             let border_width = 0.0;
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
 
-            // Images scale to fill the full quadrant
-            let size_s = Self::fit_size(s_px[0], s_px[1], vd[1], vd[2], cell_w, cell_h);
+            // Sagittal spans full height on the right; others fit in half-height cells
+            let full_h = avail.y;
+            let size_s = Self::fit_size(s_px[0], s_px[1], vd[1], vd[2], cell_w, full_h);
             let size_c = Self::fit_size(c_px[0], c_px[1], vd[0], vd[2], cell_w, cell_h);
             let size_a = Self::fit_size(a_px[0], a_px[1], vd[0], vd[1], cell_w, cell_h);
 
@@ -453,203 +454,215 @@ impl eframe::App for NiftiViewer {
             let slider_strip_h = 28.0;
             let pad = 4.0;
 
-            // ── Top row ──────────────────────────────────────────────
-            ui.horizontal(|ui| {
-                // Upper-left: Axial (Yellow)
-                ui.allocate_ui(egui::vec2(cell_w, cell_h), |ui| {
-                    let (cell_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(cell_w, cell_h), egui::Sense::hover());
-                    let offset = egui::vec2((cell_w - size_a.x) / 2.0, (cell_h - size_a.y) / 2.0);
-                    let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_a);
-                    ui.painter()
-                        .image(tex_a.id(), img_rect, uv, egui::Color32::WHITE);
-                    ui.painter().rect_stroke(
-                        img_rect,
-                        0.0,
-                        egui::Stroke::new(border_width, egui::Color32::YELLOW),
-                        egui::StrokeKind::Outside,
-                    );
-                    let label_strip = egui::Rect::from_min_size(
-                        cell_rect.min,
-                        egui::vec2(cell_rect.width(), strip_h),
-                    );
-                    ui.painter().rect_filled(label_strip, 0.0, overlay_bg);
-                    ui.painter().text(
-                        label_strip.left_center() + egui::vec2(6.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        format!("Axial  Z = {:.1} mm", self.voxel_to_mm(2, self.slice_z)),
-                        label_font.clone(),
-                        egui::Color32::YELLOW,
-                    );
-                    let slider_strip = egui::Rect::from_min_size(
-                        egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
-                        egui::vec2(cell_rect.width(), slider_strip_h),
-                    );
-                    ui.painter().rect_filled(slider_strip, 0.0, overlay_bg);
-                    let mm_a = self.voxel_to_mm(2, 0);
-                    let mm_b = self.voxel_to_mm(2, self.volume.as_ref().unwrap().shape()[2] - 1);
-                    let mm_min_z = mm_a.min(mm_b);
-                    let mm_max_z = mm_a.max(mm_b);
-                    let mut mm_z = self.voxel_to_mm(2, self.slice_z);
-                    let slider_rect = slider_strip.shrink(pad);
-                    ui.spacing_mut().slider_width = slider_rect.width() * 0.7;
-                    let resp = ui.put(
-                        slider_rect,
-                        egui::Slider::new(&mut mm_z, mm_min_z..=mm_max_z)
-                            .suffix(" mm")
-                            .step_by(self.voxdim[2] as f64),
-                    );
-                    if resp.changed() {
-                        self.slice_z = self.mm_to_voxel(2, mm_z);
-                    }
-                    if ui.rect_contains_pointer(cell_rect) {
-                        self.scroll_accum[2] += ui.input(|i| i.raw_scroll_delta.y);
-                        let step = 30.0_f32;
-                        while self.scroll_accum[2] >= step {
-                            self.scroll_accum[2] -= step;
-                            if self.slice_z < self.volume.as_ref().unwrap().shape()[2] - 1 {
-                                self.slice_z += 1;
-                            }
-                        }
-                        while self.scroll_accum[2] <= -step {
-                            self.scroll_accum[2] += step;
-                            self.slice_z = self.slice_z.saturating_sub(1);
-                        }
-                    }
-                });
+            // Compute explicit cell rects for a 2-col layout:
+            //   Left col = Axial (top) + Coronal (bottom), Right col = Sagittal (full height)
+            let origin = ui.min_rect().min;
+            let rect_axial = egui::Rect::from_min_size(origin, egui::vec2(cell_w, cell_h));
+            let rect_coronal = egui::Rect::from_min_size(
+                egui::pos2(origin.x, origin.y + cell_h + spacing.y),
+                egui::vec2(cell_w, cell_h),
+            );
+            let rect_sagittal = egui::Rect::from_min_size(
+                egui::pos2(origin.x + cell_w + spacing.x, origin.y),
+                egui::vec2(cell_w, full_h),
+            );
+            // Reserve the full area so egui knows it's used
+            ui.allocate_rect(
+                egui::Rect::from_min_size(origin, avail),
+                egui::Sense::hover(),
+            );
 
-                // Upper-right: empty quadrant
-                ui.allocate_ui(egui::vec2(cell_w, cell_h), |_ui| {});
-            });
+            // ── Axial (Yellow) ──
+            {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect_axial));
+                let cell_rect = rect_axial;
+                let offset = egui::vec2((cell_w - size_a.x) / 2.0, (cell_h - size_a.y) / 2.0);
+                let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_a);
+                child
+                    .painter()
+                    .image(tex_a.id(), img_rect, uv, egui::Color32::WHITE);
+                child.painter().rect_stroke(
+                    img_rect,
+                    0.0,
+                    egui::Stroke::new(border_width, egui::Color32::YELLOW),
+                    egui::StrokeKind::Outside,
+                );
+                let label_strip = egui::Rect::from_min_size(
+                    cell_rect.min,
+                    egui::vec2(cell_rect.width(), strip_h),
+                );
+                child.painter().rect_filled(label_strip, 0.0, overlay_bg);
+                child.painter().text(
+                    label_strip.left_center() + egui::vec2(6.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("Axial  Z = {:.1} mm", self.voxel_to_mm(2, self.slice_z)),
+                    label_font.clone(),
+                    egui::Color32::YELLOW,
+                );
+                let slider_strip = egui::Rect::from_min_size(
+                    egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
+                    egui::vec2(cell_rect.width(), slider_strip_h),
+                );
+                child.painter().rect_filled(slider_strip, 0.0, overlay_bg);
+                let mm_a = self.voxel_to_mm(2, 0);
+                let mm_b = self.voxel_to_mm(2, self.volume.as_ref().unwrap().shape()[2] - 1);
+                let mm_min_z = mm_a.min(mm_b);
+                let mm_max_z = mm_a.max(mm_b);
+                let mut mm_z = self.voxel_to_mm(2, self.slice_z);
+                let slider_rect = slider_strip.shrink(pad);
+                child.spacing_mut().slider_width = slider_rect.width() * 0.7;
+                let resp = child.put(
+                    slider_rect,
+                    egui::Slider::new(&mut mm_z, mm_min_z..=mm_max_z)
+                        .suffix(" mm")
+                        .step_by(self.voxdim[2] as f64),
+                );
+                if resp.changed() {
+                    self.slice_z = self.mm_to_voxel(2, mm_z);
+                }
+                if child.rect_contains_pointer(cell_rect) {
+                    self.scroll_accum[2] += child.input(|i| i.raw_scroll_delta.y);
+                    let step = 30.0_f32;
+                    while self.scroll_accum[2] >= step {
+                        self.scroll_accum[2] -= step;
+                        if self.slice_z < self.volume.as_ref().unwrap().shape()[2] - 1 {
+                            self.slice_z += 1;
+                        }
+                    }
+                    while self.scroll_accum[2] <= -step {
+                        self.scroll_accum[2] += step;
+                        self.slice_z = self.slice_z.saturating_sub(1);
+                    }
+                }
+            }
 
-            // ── Bottom row ───────────────────────────────────────────
-            ui.horizontal(|ui| {
-                // Lower-left: Coronal (Green)
-                ui.allocate_ui(egui::vec2(cell_w, cell_h), |ui| {
-                    let (cell_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(cell_w, cell_h), egui::Sense::hover());
-                    let offset = egui::vec2((cell_w - size_c.x) / 2.0, (cell_h - size_c.y) / 2.0);
-                    let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_c);
-                    ui.painter()
-                        .image(tex_c.id(), img_rect, uv, egui::Color32::WHITE);
-                    ui.painter().rect_stroke(
-                        img_rect,
-                        0.0,
-                        egui::Stroke::new(border_width, egui::Color32::GREEN),
-                        egui::StrokeKind::Outside,
-                    );
-                    let label_strip = egui::Rect::from_min_size(
-                        cell_rect.min,
-                        egui::vec2(cell_rect.width(), strip_h),
-                    );
-                    ui.painter().rect_filled(label_strip, 0.0, overlay_bg);
-                    ui.painter().text(
-                        label_strip.left_center() + egui::vec2(6.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        format!("Coronal  Y = {:.1} mm", self.voxel_to_mm(1, self.slice_y)),
-                        label_font.clone(),
-                        egui::Color32::GREEN,
-                    );
-                    let slider_strip = egui::Rect::from_min_size(
-                        egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
-                        egui::vec2(cell_rect.width(), slider_strip_h),
-                    );
-                    ui.painter().rect_filled(slider_strip, 0.0, overlay_bg);
-                    let mm_a = self.voxel_to_mm(1, 0);
-                    let mm_b = self.voxel_to_mm(1, self.volume.as_ref().unwrap().shape()[1] - 1);
-                    let mm_min_y = mm_a.min(mm_b);
-                    let mm_max_y = mm_a.max(mm_b);
-                    let mut mm_y = self.voxel_to_mm(1, self.slice_y);
-                    let slider_rect = slider_strip.shrink(pad);
-                    ui.spacing_mut().slider_width = slider_rect.width() * 0.7;
-                    let resp = ui.put(
-                        slider_rect,
-                        egui::Slider::new(&mut mm_y, mm_min_y..=mm_max_y)
-                            .suffix(" mm")
-                            .step_by(self.voxdim[1] as f64),
-                    );
-                    if resp.changed() {
-                        self.slice_y = self.mm_to_voxel(1, mm_y);
-                    }
-                    if ui.rect_contains_pointer(cell_rect) {
-                        self.scroll_accum[1] += ui.input(|i| i.raw_scroll_delta.y);
-                        let step = 30.0_f32;
-                        while self.scroll_accum[1] >= step {
-                            self.scroll_accum[1] -= step;
-                            if self.slice_y < self.volume.as_ref().unwrap().shape()[1] - 1 {
-                                self.slice_y += 1;
-                            }
-                        }
-                        while self.scroll_accum[1] <= -step {
-                            self.scroll_accum[1] += step;
-                            self.slice_y = self.slice_y.saturating_sub(1);
+            // ── Coronal (Green) ──
+            {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect_coronal));
+                let cell_rect = rect_coronal;
+                let offset = egui::vec2((cell_w - size_c.x) / 2.0, (cell_h - size_c.y) / 2.0);
+                let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_c);
+                child
+                    .painter()
+                    .image(tex_c.id(), img_rect, uv, egui::Color32::WHITE);
+                child.painter().rect_stroke(
+                    img_rect,
+                    0.0,
+                    egui::Stroke::new(border_width, egui::Color32::GREEN),
+                    egui::StrokeKind::Outside,
+                );
+                let label_strip = egui::Rect::from_min_size(
+                    cell_rect.min,
+                    egui::vec2(cell_rect.width(), strip_h),
+                );
+                child.painter().rect_filled(label_strip, 0.0, overlay_bg);
+                child.painter().text(
+                    label_strip.left_center() + egui::vec2(6.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("Coronal  Y = {:.1} mm", self.voxel_to_mm(1, self.slice_y)),
+                    label_font.clone(),
+                    egui::Color32::GREEN,
+                );
+                let slider_strip = egui::Rect::from_min_size(
+                    egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
+                    egui::vec2(cell_rect.width(), slider_strip_h),
+                );
+                child.painter().rect_filled(slider_strip, 0.0, overlay_bg);
+                let mm_a = self.voxel_to_mm(1, 0);
+                let mm_b = self.voxel_to_mm(1, self.volume.as_ref().unwrap().shape()[1] - 1);
+                let mm_min_y = mm_a.min(mm_b);
+                let mm_max_y = mm_a.max(mm_b);
+                let mut mm_y = self.voxel_to_mm(1, self.slice_y);
+                let slider_rect = slider_strip.shrink(pad);
+                child.spacing_mut().slider_width = slider_rect.width() * 0.7;
+                let resp = child.put(
+                    slider_rect,
+                    egui::Slider::new(&mut mm_y, mm_min_y..=mm_max_y)
+                        .suffix(" mm")
+                        .step_by(self.voxdim[1] as f64),
+                );
+                if resp.changed() {
+                    self.slice_y = self.mm_to_voxel(1, mm_y);
+                }
+                if child.rect_contains_pointer(cell_rect) {
+                    self.scroll_accum[1] += child.input(|i| i.raw_scroll_delta.y);
+                    let step = 30.0_f32;
+                    while self.scroll_accum[1] >= step {
+                        self.scroll_accum[1] -= step;
+                        if self.slice_y < self.volume.as_ref().unwrap().shape()[1] - 1 {
+                            self.slice_y += 1;
                         }
                     }
-                });
+                    while self.scroll_accum[1] <= -step {
+                        self.scroll_accum[1] += step;
+                        self.slice_y = self.slice_y.saturating_sub(1);
+                    }
+                }
+            }
 
-                // Lower-right: Sagittal (Red)
-                ui.allocate_ui(egui::vec2(cell_w, cell_h), |ui| {
-                    let (cell_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(cell_w, cell_h), egui::Sense::hover());
-                    let offset = egui::vec2((cell_w - size_s.x) / 2.0, (cell_h - size_s.y) / 2.0);
-                    let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_s);
-                    ui.painter()
-                        .image(tex_s.id(), img_rect, uv, egui::Color32::WHITE);
-                    ui.painter().rect_stroke(
-                        img_rect,
-                        0.0,
-                        egui::Stroke::new(border_width, egui::Color32::RED),
-                        egui::StrokeKind::Outside,
-                    );
-                    let label_strip = egui::Rect::from_min_size(
-                        cell_rect.min,
-                        egui::vec2(cell_rect.width(), strip_h),
-                    );
-                    ui.painter().rect_filled(label_strip, 0.0, overlay_bg);
-                    ui.painter().text(
-                        label_strip.left_center() + egui::vec2(6.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        format!("Sagittal  X = {:.1} mm", self.voxel_to_mm(0, self.slice_x)),
-                        label_font.clone(),
-                        egui::Color32::RED,
-                    );
-                    let slider_strip = egui::Rect::from_min_size(
-                        egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
-                        egui::vec2(cell_rect.width(), slider_strip_h),
-                    );
-                    ui.painter().rect_filled(slider_strip, 0.0, overlay_bg);
-                    let mm_a = self.voxel_to_mm(0, 0);
-                    let mm_b = self.voxel_to_mm(0, self.volume.as_ref().unwrap().shape()[0] - 1);
-                    let mm_min_x = mm_a.min(mm_b);
-                    let mm_max_x = mm_a.max(mm_b);
-                    let mut mm_x = self.voxel_to_mm(0, self.slice_x);
-                    let slider_rect = slider_strip.shrink(pad);
-                    ui.spacing_mut().slider_width = slider_rect.width() * 0.7;
-                    let resp = ui.put(
-                        slider_rect,
-                        egui::Slider::new(&mut mm_x, mm_min_x..=mm_max_x)
-                            .suffix(" mm")
-                            .step_by(self.voxdim[0] as f64),
-                    );
-                    if resp.changed() {
-                        self.slice_x = self.mm_to_voxel(0, mm_x);
-                    }
-                    if ui.rect_contains_pointer(cell_rect) {
-                        self.scroll_accum[0] += ui.input(|i| i.raw_scroll_delta.y);
-                        let step = 30.0_f32;
-                        while self.scroll_accum[0] >= step {
-                            self.scroll_accum[0] -= step;
-                            if self.slice_x < self.volume.as_ref().unwrap().shape()[0] - 1 {
-                                self.slice_x += 1;
-                            }
-                        }
-                        while self.scroll_accum[0] <= -step {
-                            self.scroll_accum[0] += step;
-                            self.slice_x = self.slice_x.saturating_sub(1);
+            // ── Sagittal (Red) spanning full height ──
+            {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect_sagittal));
+                let cell_rect = rect_sagittal;
+                let offset = egui::vec2((cell_w - size_s.x) / 2.0, (full_h - size_s.y) / 2.0);
+                let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_s);
+                child
+                    .painter()
+                    .image(tex_s.id(), img_rect, uv, egui::Color32::WHITE);
+                child.painter().rect_stroke(
+                    img_rect,
+                    0.0,
+                    egui::Stroke::new(border_width, egui::Color32::RED),
+                    egui::StrokeKind::Outside,
+                );
+                let label_strip = egui::Rect::from_min_size(
+                    cell_rect.min,
+                    egui::vec2(cell_rect.width(), strip_h),
+                );
+                child.painter().rect_filled(label_strip, 0.0, overlay_bg);
+                child.painter().text(
+                    label_strip.left_center() + egui::vec2(6.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("Sagittal  X = {:.1} mm", self.voxel_to_mm(0, self.slice_x)),
+                    label_font.clone(),
+                    egui::Color32::RED,
+                );
+                let slider_strip = egui::Rect::from_min_size(
+                    egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
+                    egui::vec2(cell_rect.width(), slider_strip_h),
+                );
+                child.painter().rect_filled(slider_strip, 0.0, overlay_bg);
+                let mm_a = self.voxel_to_mm(0, 0);
+                let mm_b = self.voxel_to_mm(0, self.volume.as_ref().unwrap().shape()[0] - 1);
+                let mm_min_x = mm_a.min(mm_b);
+                let mm_max_x = mm_a.max(mm_b);
+                let mut mm_x = self.voxel_to_mm(0, self.slice_x);
+                let slider_rect = slider_strip.shrink(pad);
+                child.spacing_mut().slider_width = slider_rect.width() * 0.7;
+                let resp = child.put(
+                    slider_rect,
+                    egui::Slider::new(&mut mm_x, mm_min_x..=mm_max_x)
+                        .suffix(" mm")
+                        .step_by(self.voxdim[0] as f64),
+                );
+                if resp.changed() {
+                    self.slice_x = self.mm_to_voxel(0, mm_x);
+                }
+                if child.rect_contains_pointer(cell_rect) {
+                    self.scroll_accum[0] += child.input(|i| i.raw_scroll_delta.y);
+                    let step = 30.0_f32;
+                    while self.scroll_accum[0] >= step {
+                        self.scroll_accum[0] -= step;
+                        if self.slice_x < self.volume.as_ref().unwrap().shape()[0] - 1 {
+                            self.slice_x += 1;
                         }
                     }
-                });
-            });
+                    while self.scroll_accum[0] <= -step {
+                        self.scroll_accum[0] += step;
+                        self.slice_x = self.slice_x.saturating_sub(1);
+                    }
+                }
+            }
         });
 
         ctx.request_repaint(); // keeps the UI responsive
