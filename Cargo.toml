@@ -1,0 +1,13 @@
+[package]
+name = "nifti_triple_viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nifti = "0.17.0"
+ndarray = "0.16"
+image = "0.25.9"
+eframe = "0.33.3"
+egui = "0.33.3"
+anyhow = "1.0.101"
+rfd = "0.15"
