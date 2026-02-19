@@ -20,6 +20,8 @@ use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
 use web_sys::{Event, FileReader, HtmlCanvasElement, HtmlInputElement};
 
+const SWAP_LABEL: &str = ">>";
+
 /// Build the 3x3 direction part of the affine from sform, qform, or pixdims.
 fn get_affine_3x3(hdr: &NiftiHeader) -> [[f32; 3]; 3] {
     if hdr.sform_code > 0 {
@@ -171,6 +173,14 @@ fn reorient_to_ras(volume: Array3<f32>, hdr: &NiftiHeader) -> (Array3<f32>, [f32
     (vol, ras_spacing, ras_origin)
 }
 
+/// Identifies one of the three orthogonal views.
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    Sagittal,
+    Coronal,
+    Axial,
+}
+
 struct NiftiViewer {
     /// Volume in RAS orientation: axis 0 = L→R, axis 1 = P→A, axis 2 = I→S
     volume: Option<Array3<f32>>,
@@ -182,6 +192,8 @@ struct NiftiViewer {
     slice_y: usize,
     slice_z: usize,
     scroll_accum: [f32; 3],
+    /// Layout slots: [left-top, left-bottom, right-full]
+    layout: [View; 3],
     error_msg: Option<String>,
 }
 
@@ -195,6 +207,7 @@ impl NiftiViewer {
             slice_y: 0,
             slice_z: 0,
             scroll_accum: [0.0; 3],
+            layout: [View::Axial, View::Coronal, View::Sagittal],
             error_msg: None,
         }
     }
@@ -442,11 +455,23 @@ impl eframe::App for NiftiViewer {
             let border_width = 0.0;
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
 
-            // Sagittal spans full height on the right; others fit in half-height cells
+            // One panel spans full height on the right; others fit in half-height cells
             let full_h = avail.y;
-            let size_s = Self::fit_size(s_px[0], s_px[1], vd[1], vd[2], cell_w, full_h);
-            let size_c = Self::fit_size(c_px[0], c_px[1], vd[0], vd[2], cell_w, cell_h);
-            let size_a = Self::fit_size(a_px[0], a_px[1], vd[0], vd[1], cell_w, cell_h);
+            let is_full = |v: View| self.layout[2] == v;
+            let max_h_s = if is_full(View::Sagittal) {
+                full_h
+            } else {
+                cell_h
+            };
+            let max_h_c = if is_full(View::Coronal) {
+                full_h
+            } else {
+                cell_h
+            };
+            let max_h_a = if is_full(View::Axial) { full_h } else { cell_h };
+            let size_s = Self::fit_size(s_px[0], s_px[1], vd[1], vd[2], cell_w, max_h_s);
+            let size_c = Self::fit_size(c_px[0], c_px[1], vd[0], vd[2], cell_w, max_h_c);
+            let size_a = Self::fit_size(a_px[0], a_px[1], vd[0], vd[1], cell_w, max_h_a);
 
             let overlay_bg = egui::Color32::from_black_alpha(160);
             let label_font = egui::FontId::proportional(14.0);
@@ -454,18 +479,29 @@ impl eframe::App for NiftiViewer {
             let slider_strip_h = 28.0;
             let pad = 4.0;
 
-            // Compute explicit cell rects for a 2-col layout:
-            //   Left col = Axial (top) + Coronal (bottom), Right col = Sagittal (full height)
+            // Three position rects: left-top, left-bottom, right-full
             let origin = ui.min_rect().min;
-            let rect_axial = egui::Rect::from_min_size(origin, egui::vec2(cell_w, cell_h));
-            let rect_coronal = egui::Rect::from_min_size(
-                egui::pos2(origin.x, origin.y + cell_h + spacing.y),
-                egui::vec2(cell_w, cell_h),
-            );
-            let rect_sagittal = egui::Rect::from_min_size(
-                egui::pos2(origin.x + cell_w + spacing.x, origin.y),
-                egui::vec2(cell_w, full_h),
-            );
+            let slot_rects = [
+                egui::Rect::from_min_size(origin, egui::vec2(cell_w, cell_h)),
+                egui::Rect::from_min_size(
+                    egui::pos2(origin.x, origin.y + cell_h + spacing.y),
+                    egui::vec2(cell_w, cell_h),
+                ),
+                egui::Rect::from_min_size(
+                    egui::pos2(origin.x + cell_w + spacing.x, origin.y),
+                    egui::vec2(cell_w, full_h),
+                ),
+            ];
+            // Find which slot each view occupies
+            fn slot_of(layout: &[View; 3], v: View) -> usize {
+                layout.iter().position(|&x| x == v).unwrap()
+            }
+            let slot_axial = slot_of(&self.layout, View::Axial);
+            let slot_coronal = slot_of(&self.layout, View::Coronal);
+            let slot_sagittal = slot_of(&self.layout, View::Sagittal);
+            let rect_axial = slot_rects[slot_axial];
+            let rect_coronal = slot_rects[slot_coronal];
+            let rect_sagittal = slot_rects[slot_sagittal];
             // Reserve the full area so egui knows it's used
             ui.allocate_rect(
                 egui::Rect::from_min_size(origin, avail),
@@ -476,7 +512,10 @@ impl eframe::App for NiftiViewer {
             {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect_axial));
                 let cell_rect = rect_axial;
-                let offset = egui::vec2((cell_w - size_a.x) / 2.0, (cell_h - size_a.y) / 2.0);
+                let offset = egui::vec2(
+                    (cell_rect.width() - size_a.x) / 2.0,
+                    (cell_rect.height() - size_a.y) / 2.0,
+                );
                 let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_a);
                 child
                     .painter()
@@ -499,6 +538,26 @@ impl eframe::App for NiftiViewer {
                     label_font.clone(),
                     egui::Color32::YELLOW,
                 );
+                if self.layout[2] != View::Axial {
+                    let btn_rect = egui::Rect::from_min_size(
+                        egui::pos2(label_strip.right() - strip_h - 2.0, label_strip.min.y + 1.0),
+                        egui::vec2(strip_h - 2.0, strip_h - 2.0),
+                    );
+                    if child
+                        .put(
+                            btn_rect,
+                            egui::Button::new(
+                                egui::RichText::new(SWAP_LABEL)
+                                    .color(egui::Color32::YELLOW)
+                                    .size(14.0),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        self.layout.swap(slot_axial, 2);
+                    }
+                }
                 let slider_strip = egui::Rect::from_min_size(
                     egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
                     egui::vec2(cell_rect.width(), slider_strip_h),
@@ -540,7 +599,10 @@ impl eframe::App for NiftiViewer {
             {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect_coronal));
                 let cell_rect = rect_coronal;
-                let offset = egui::vec2((cell_w - size_c.x) / 2.0, (cell_h - size_c.y) / 2.0);
+                let offset = egui::vec2(
+                    (cell_rect.width() - size_c.x) / 2.0,
+                    (cell_rect.height() - size_c.y) / 2.0,
+                );
                 let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_c);
                 child
                     .painter()
@@ -563,6 +625,26 @@ impl eframe::App for NiftiViewer {
                     label_font.clone(),
                     egui::Color32::GREEN,
                 );
+                if self.layout[2] != View::Coronal {
+                    let btn_rect = egui::Rect::from_min_size(
+                        egui::pos2(label_strip.right() - strip_h - 2.0, label_strip.min.y + 1.0),
+                        egui::vec2(strip_h - 2.0, strip_h - 2.0),
+                    );
+                    if child
+                        .put(
+                            btn_rect,
+                            egui::Button::new(
+                                egui::RichText::new(SWAP_LABEL)
+                                    .color(egui::Color32::GREEN)
+                                    .size(14.0),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        self.layout.swap(slot_coronal, 2);
+                    }
+                }
                 let slider_strip = egui::Rect::from_min_size(
                     egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
                     egui::vec2(cell_rect.width(), slider_strip_h),
@@ -600,11 +682,14 @@ impl eframe::App for NiftiViewer {
                 }
             }
 
-            // ── Sagittal (Red) spanning full height ──
+            // ── Sagittal (Red) ──
             {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect_sagittal));
                 let cell_rect = rect_sagittal;
-                let offset = egui::vec2((cell_w - size_s.x) / 2.0, (full_h - size_s.y) / 2.0);
+                let offset = egui::vec2(
+                    (cell_rect.width() - size_s.x) / 2.0,
+                    (cell_rect.height() - size_s.y) / 2.0,
+                );
                 let img_rect = egui::Rect::from_min_size(cell_rect.min + offset, size_s);
                 child
                     .painter()
@@ -627,6 +712,26 @@ impl eframe::App for NiftiViewer {
                     label_font.clone(),
                     egui::Color32::RED,
                 );
+                if self.layout[2] != View::Sagittal {
+                    let btn_rect = egui::Rect::from_min_size(
+                        egui::pos2(label_strip.right() - strip_h - 2.0, label_strip.min.y + 1.0),
+                        egui::vec2(strip_h - 2.0, strip_h - 2.0),
+                    );
+                    if child
+                        .put(
+                            btn_rect,
+                            egui::Button::new(
+                                egui::RichText::new(SWAP_LABEL)
+                                    .color(egui::Color32::RED)
+                                    .size(14.0),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        self.layout.swap(slot_sagittal, 2);
+                    }
+                }
                 let slider_strip = egui::Rect::from_min_size(
                     egui::pos2(cell_rect.min.x, cell_rect.max.y - slider_strip_h),
                     egui::vec2(cell_rect.width(), slider_strip_h),
