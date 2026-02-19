@@ -398,6 +398,12 @@ impl eframe::App for NiftiViewer {
                         }
                     }
                 });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.hyperlink_to(
+                        "View in GitHub",
+                        "https://github.com/liangchunn/nifti-triple-viewer",
+                    );
+                });
             });
             if let Some(ref msg) = self.error_msg {
                 ui.colored_label(egui::Color32::RED, msg);
