@@ -7,3 +7,4 @@ build-web:
 build-web-ci:
   cargo build --release --target wasm32-unknown-unknown
   wasm-bindgen --out-dir web --target web target/wasm32-unknown-unknown/release/nifti_triple_viewer.wasm
+  wasm-opt -Oz --strip-debug --strip-dwarf --metrics -o web/nifti_triple_viewer_bg.wasm web/nifti_triple_viewer_bg.wasm
