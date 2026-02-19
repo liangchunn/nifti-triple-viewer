@@ -9,5 +9,23 @@ ndarray = "0.16"
 image = "0.25.9"
 eframe = "0.33.3"
 egui = "0.33.3"
-anyhow = "1.0.101"
 rfd = "0.15"
+# web dependencies
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+wasm-logger = "0.2"
+console_error_panic_hook = "0.1"
+anyhow = "1.0.101"
+js-sys = "0.3"
+flate2 = "1"
+web-sys = { version = "0.3", features = [
+	"Window",
+	"Document",
+	"Element",
+	"Event",
+	"HtmlCanvasElement",
+	"HtmlInputElement",
+	"File",
+	"FileList",
+	"FileReader",
+] }

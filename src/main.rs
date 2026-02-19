@@ -1,7 +1,23 @@
 use anyhow::Result;
 use eframe::egui;
 use ndarray::{s, Array3};
-use nifti::{IntoNdArray, NiftiHeader, NiftiObject, ReaderOptions};
+use nifti::{InMemNiftiVolume, IntoNdArray, NiftiHeader, NiftiObject, ReaderOptions};
+use std::io::Read;
+
+#[cfg(target_arch = "wasm32")]
+use flate2::read::GzDecoder;
+#[cfg(target_arch = "wasm32")]
+use js_sys::Uint8Array;
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::io::Cursor;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::closure::Closure;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use web_sys::{Event, FileReader, HtmlCanvasElement, HtmlInputElement};
 
 /// Build the 3x3 direction part of the affine from sform, qform, or pixdims.
 fn get_affine_3x3(hdr: &NiftiHeader) -> [[f32; 3]; 3] {
@@ -200,6 +216,68 @@ impl NiftiViewer {
         }
     }
 
+    fn load_from_bytes(&mut self, bytes: &[u8]) {
+        match load_nifti_bytes(bytes) {
+            Ok((volume, voxdim, ras_origin)) => {
+                self.slice_x = volume.shape()[0] / 2;
+                self.slice_y = volume.shape()[1] / 2;
+                self.slice_z = volume.shape()[2] / 2;
+                self.volume = Some(volume);
+                self.voxdim = voxdim;
+                self.ras_origin = ras_origin;
+                self.scroll_accum = [0.0; 3];
+                self.error_msg = None;
+            }
+            Err(e) => {
+                self.error_msg = Some(format!("Failed to load: {e}"));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn open_web_file_dialog(&mut self, ctx: &egui::Context) {
+        let window = web_sys::window().expect("window not available");
+        let document = window.document().expect("document not available");
+        let input: HtmlInputElement = document
+            .create_element("input")
+            .expect("create input")
+            .dyn_into()
+            .expect("input element");
+        input.set_type("file");
+        input.set_accept(".nii,.nii.gz");
+
+        let input_clone = input.clone();
+        let ctx_clone = ctx.clone();
+        let onload = Closure::wrap(Box::new(move |event: Event| {
+            let target = event.target().expect("no event target");
+            let reader: FileReader = target.dyn_into().expect("file reader");
+            if let Ok(result) = reader.result() {
+                let array = Uint8Array::new(&result);
+                let mut bytes = vec![0u8; array.length() as usize];
+                array.copy_to(&mut bytes);
+                set_pending_bytes(bytes);
+                ctx_clone.request_repaint();
+            }
+        }) as Box<dyn FnMut(_)>);
+
+        let reader = FileReader::new().expect("file reader");
+        reader.set_onloadend(Some(onload.as_ref().unchecked_ref()));
+        onload.forget();
+
+        let reader_clone = reader.clone();
+        let onchange = Closure::wrap(Box::new(move |_event: Event| {
+            if let Some(files) = input_clone.files() {
+                if let Some(file) = files.get(0) {
+                    let _ = reader_clone.read_as_array_buffer(&file);
+                }
+            }
+        }) as Box<dyn FnMut(_)>);
+        input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+        onchange.forget();
+
+        input.click();
+    }
+
     /// Convert a voxel index to display mm along the given axis.
     /// Axes 0 (R) and 1 (A) are negated to match LPS display convention
     /// used by 3D Slicer (L = −R, P = −A, S = S).
@@ -291,11 +369,18 @@ impl eframe::App for NiftiViewer {
                 ui.menu_button("File", |ui| {
                     if ui.button("Load NIfTI…").clicked() {
                         ui.close();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("NIfTI", &["nii", "gz"])
-                            .pick_file()
+                        #[cfg(not(target_arch = "wasm32"))]
                         {
-                            self.load_from_path(&path.to_string_lossy());
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("NIfTI", &["nii", "gz"])
+                                .pick_file()
+                            {
+                                self.load_from_path(&path.to_string_lossy());
+                            }
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            self.open_web_file_dialog(ctx);
                         }
                     }
                 });
@@ -304,6 +389,11 @@ impl eframe::App for NiftiViewer {
                 ui.colored_label(egui::Color32::RED, msg);
             }
         });
+
+        #[cfg(target_arch = "wasm32")]
+        if let Some(bytes) = take_pending_bytes() {
+            self.load_from_bytes(&bytes);
+        }
 
         let frame = egui::Frame::new()
             .fill(egui::Color32::BLACK)
@@ -568,18 +658,87 @@ fn load_nifti(path: &str) -> Result<(Array3<f32>, [f32; 3], [f32; 3])> {
     Ok((volume, voxdim, ras_origin))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn load_nifti_bytes(bytes: &[u8]) -> Result<(Array3<f32>, [f32; 3], [f32; 3])> {
+    let is_gz = bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
+    let cursor = Cursor::new(bytes);
+    if is_gz {
+        load_nifti_reader(GzDecoder::new(cursor))
+    } else {
+        load_nifti_reader(cursor)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_nifti_bytes(_bytes: &[u8]) -> Result<(Array3<f32>, [f32; 3], [f32; 3])> {
+    anyhow::bail!("in-memory loading is only available on wasm")
+}
+
+fn load_nifti_reader<R: Read>(mut reader: R) -> Result<(Array3<f32>, [f32; 3], [f32; 3])> {
+    let header = NiftiHeader::from_reader(&mut reader)?;
+    let vox_offset = header.vox_offset.max(348.0) as usize;
+    let skip = vox_offset.saturating_sub(348);
+    if skip > 0 {
+        let mut discard = vec![0u8; skip];
+        reader.read_exact(&mut discard)?;
+    }
+    let volume = InMemNiftiVolume::from_reader(reader, &header)?;
+    let volume = volume.into_ndarray::<f32>()?;
+    let volume = volume.into_dimensionality::<ndarray::Ix3>()?;
+    let (volume, voxdim, ras_origin) = reorient_to_ras(volume, &header);
+    Ok((volume, voxdim, ras_origin))
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static PENDING_BYTES: RefCell<Option<Vec<u8>>> = RefCell::new(None);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn set_pending_bytes(bytes: Vec<u8>) {
+    PENDING_BYTES.with(|cell| {
+        *cell.borrow_mut() = Some(bytes);
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn take_pending_bytes() -> Option<Vec<u8>> {
+    PENDING_BYTES.with(|cell| cell.borrow_mut().take())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
     let app = NiftiViewer::new();
-
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 800.0]),
         ..Default::default()
     };
-
     eframe::run_native(
         "Rust NIfTI Triple Axis Viewer",
         native_options,
         Box::new(|_cc| Ok(Box::new(app))),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    // Set up panic hook for better error messages
+    console_error_panic_hook::set_once();
+    wasm_logger::init(wasm_logger::Config::default());
+    let app = NiftiViewer::new();
+    let web_options = eframe::WebOptions::default();
+    let window = web_sys::window().expect("window not available");
+    let document = window.document().expect("document not available");
+    let canvas: HtmlCanvasElement = document
+        .get_element_by_id("canvas_render")
+        .expect("canvas not found")
+        .dyn_into()
+        .expect("canvas element");
+    wasm_bindgen_futures::spawn_local(async move {
+        eframe::WebRunner::new()
+            .start(canvas, web_options, Box::new(|_cc| Ok(Box::new(app))))
+            .await
+            .expect("failed to start eframe web app");
+    });
 }
