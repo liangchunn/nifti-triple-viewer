@@ -409,19 +409,63 @@ impl eframe::App for NiftiViewer {
             self.load_from_bytes(&bytes);
         }
 
+        // ── Handle drag-and-drop ──
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if let Some(file) = dropped.first() {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(ref path) = file.path {
+                self.load_from_path(&path.to_string_lossy());
+            }
+            #[cfg(target_arch = "wasm32")]
+            if let Some(ref bytes) = file.bytes {
+                self.load_from_bytes(bytes);
+            }
+        }
+        let is_hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
+
         let frame = egui::Frame::new()
             .fill(egui::Color32::BLACK)
             .inner_margin(0.0);
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let Some((sagittal, coronal, axial)) = self.get_slices() else {
                 ui.centered_and_justified(|ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            "No volume loaded.\nUse File > Load NIfTI… to open a file.",
-                        )
-                        .color(egui::Color32::GRAY)
-                        .size(20.0),
-                    );
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 2.0 - 30.0);
+                        ui.label(
+                            egui::RichText::new("No volume loaded")
+                                .color(egui::Color32::GRAY)
+                                .size(20.0),
+                        );
+                        ui.add_space(8.0);
+                        if ui
+                            .link(
+                                egui::RichText::new("Click to open a NIfTI file…")
+                                    .color(egui::Color32::from_rgb(100, 149, 237))
+                                    .size(18.0),
+                            )
+                            .clicked()
+                        {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("NIfTI", &["nii", "gz"])
+                                    .pick_file()
+                                {
+                                    self.load_from_path(&path.to_string_lossy());
+                                }
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                self.open_web_file_dialog(ctx);
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("or drag and drop a .nii / .nii.gz file")
+                                .color(egui::Color32::from_gray(120))
+                                .size(14.0),
+                        );
+                    });
                 });
                 return;
             };
@@ -767,6 +811,19 @@ impl eframe::App for NiftiViewer {
                         self.slice_x = self.slice_x.saturating_sub(1);
                     }
                 }
+            }
+            // Show drop overlay when files are dragged over the window
+            if is_hovering_files {
+                let rect = ui.max_rect();
+                ui.painter()
+                    .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(200));
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Drop NIfTI file here",
+                    egui::FontId::proportional(24.0),
+                    egui::Color32::WHITE,
+                );
             }
         });
 
