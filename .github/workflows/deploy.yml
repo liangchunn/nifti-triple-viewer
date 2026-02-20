@@ -9,29 +9,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: extractions/setup-just@v3
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: taiki-e/install-action@v2
+      - uses: actions/setup-node@v6
         with:
-          tool: wasm-bindgen@0.2.108
-      - name: install binaryen
-        run: |
-          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz -o binaryen.tar.gz
-          tar -xzf binaryen.tar.gz
-          echo "$PWD/binaryen-version_126/bin" >> $GITHUB_PATH
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: just build-web-ci
+          node-version-file: './package.json'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
       - name: upload static assets
         id: deployment
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./web/
+          path: ./dist/
   deploy:
     needs: build
     runs-on: ubuntu-latest

@@ -1,6 +1,6 @@
 # nifti-triple-viewer
 
-Renders MRI images in [NIfTI format](https://nifti.nimh.nih.gov) in your browser or desktop via [egui](https://github.com/emilk/egui)
+Renders MRI images in [NIfTI format](https://nifti.nimh.nih.gov) in your browser
 
 Note: Files opened in the tool are processed locally and are NEVER uploaded
 
@@ -11,15 +11,12 @@ Note: Files opened in the tool are processed locally and are NEVER uploaded
 
 ## Development
 
-- [rustup](https://rustup.rs)
-- [just](https://github.com/casey/just)
+- [volta](https://volta.sh/)
 
 ```sh
-# run on your desktop
-cargo run --release
+# install dependencies
+npm install
 
-# run on the web
-just build-web
-# serve the static assets
-npx serve -s web
+# run the dev server
+npm run dev
 ```
