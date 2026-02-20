@@ -111,7 +111,7 @@ function App() {
       </div>
       {!data && (
         <div className="grid h-svh items-center justify-center">
-          <div className="flex flex-col items-center gap-2">
+          <div className="flex flex-col items-center gap-2 -mt-32">
             <p className="text-2xl font-medium pb-2">No volume loaded</p>
             <Button onClick={open}>
               <FolderOpenIcon className="size-4" />
